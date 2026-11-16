@@ -3,13 +3,16 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.state import normalize_checkpoint_row
 from app.store import store
 
 MODULE = "checkpoint"
 REQUIRED_FIELDS = ["记录编号", "流作业名", "检查点ID"]
 STATUS_ORDER = ["已创建", "已恢复", "已过期", "已清理"]
 ACTION_RULES = {"恢复状态": "已创建", "清理记录": "已恢复", "归档记录": "已过期"}
+RESTORABLE_STATUSES = {"已创建", "已恢复"}
 NEGATIVE_ACTIONS = []
+CHECKPOINT_OPTIONAL_FIELDS = ["状态大小", "保存路径", "创建时间", "恢复耗时"]
 
 
 class CheckpointService:
@@ -21,7 +24,7 @@ class CheckpointService:
         page: int = 1,
         size: int = 20,
     ) -> tuple[list[dict[str, Any]], int]:
-        rows = store.rows(MODULE)
+        rows = [normalize_checkpoint_row(row) for row in store.rows(MODULE)]
         if keyword:
             rows = [row for row in rows if keyword in str(row.get("记录编号", ""))]
         if status:
@@ -31,7 +34,8 @@ class CheckpointService:
         return rows[start:start + size], total
 
     def get_entry(self, entry_id: int) -> dict[str, Any] | None:
-        return store.find(MODULE, entry_id)
+        entry = store.find(MODULE, entry_id)
+        return normalize_checkpoint_row(entry) if entry is not None else None
 
     def create_entry(self, values: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
         missing = [field for field in REQUIRED_FIELDS if not str(values.get(field) or "").strip()]
@@ -40,7 +44,14 @@ class CheckpointService:
         rows = store.rows(MODULE)
         entry = {"id": max((int(row.get("id", 0)) for row in rows), default=0) + 1}
         entry.update({field: values.get(field) for field in REQUIRED_FIELDS})
+        for field in CHECKPOINT_OPTIONAL_FIELDS:
+            if field in values:
+                entry[field] = values.get(field)
+        entry["保存路径"] = str(entry.get("保存路径") or "").strip()
+        entry["状态大小"] = entry.get("状态大小") or "0B"
         entry["status"] = STATUS_ORDER[0]
+        entry["记录状态"] = STATUS_ORDER[0]
+        entry["可恢复"] = True
         entry["pending"] = True
         entry["abnormal"] = False
         rows.append(entry)
@@ -50,12 +61,15 @@ class CheckpointService:
         entry = store.find(MODULE, entry_id)
         if entry is None:
             return None, f"检查点记录 {entry_id} 不存在或已归档"
+        normalize_checkpoint_row(entry)
         if action not in ACTION_RULES:
             return None, f"动作「{action}」不属于检查点恢复可执行范围"
         target = ACTION_RULES[action]
         if target not in STATUS_ORDER:
             return None, f"目标状态「{target}」不在允许的状态序列里"
         entry["status"] = target
+        entry["记录状态"] = target
+        entry["可恢复"] = target in RESTORABLE_STATUSES
         entry["pending"] = target != STATUS_ORDER[-1]
         entry["abnormal"] = action in NEGATIVE_ACTIONS
         return entry, f"检查点记录已{action}"

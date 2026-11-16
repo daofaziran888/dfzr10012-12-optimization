@@ -68,10 +68,41 @@ npm run dev
 
 ## 约定
 
-- 每个模块的前端页面在 `frontend/src/views/<模块>/index.vue`，后端接口在
+- 每个模块的前端页面在 `frontend/src/views/<模块>/index.tsx`，后端接口在
   `backend/app/routers/<模块>.py`，业务规则在 `backend/app/services/<模块>.py`。
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
+
+## 过期快照批量清理与状态快照数据清单
+
+状态后端管理（`state`）额外负责过期快照的批量清理。清理口径：
+
+- 先读 STAT 状态快照与 CHEC 检查点引用，校验引用集合后再写清单、删目录。
+- 被可恢复检查点（含仍停留在恢复待办里的已过期检查点）引用的存储路径整组保留，
+  受保护大小计入状态快照数据清单，状态后端的状态大小不减。
+- 同一路径由清理登记（`_state_cleanup`）保证并发清理只成功一次。
+- 引用集合、删除结果、受保护大小与失败项在同一事务里写入状态快照数据清单；
+  失败项保留原目录，`/retry` 只从未完成路径继续。
+- 跨链路冲突（已登记删除的目录仍被恢复待办引用）只登记失败项并保留目录。
+- 重复提交只接受一份记录，返回既有清单；引用集合已释放时允许重新清理。
+- 消费侧通过 `/api/state/manifests/consumers` 查看、`/sync` 推进版本标识。
+
+相关接口：
+
+| 接口 | 说明 |
+| --- | --- |
+| `POST /api/state/manifests/cleanup` | 批量清理；提交 `state_ids`/`状态快照`、`检查点`、`提交编号`，`预演` 只计算不落库 |
+| `GET /api/state/manifests` | 状态快照数据清单列表 |
+| `GET /api/state/manifests/{id}` | 单份清单明细（删除结果、保护项、受保护大小、失败项、整组进度） |
+| `POST /api/state/manifests/{id}/retry` | 失败续跑，只处理未完成路径 |
+| `POST /api/state/manifests/{id}/sync` | 跨链路同步同一份清单并更新消费侧版本标识 |
+| `GET /api/state/manifests/consumers` | 消费侧版本标识 |
+
+验收样例：`STAT-0001`、`STAT-0002` 与 `CHEC-0003` 一起清理时，只删除无引用的
+`orders-archive/ckpt-099` 目录，被 `CHEC-0001` 引用的 1.2GB 快照仍保留并计入状态大小，
+清单受保护大小为 1.2GB。
+
+测试：`cd backend && .venv/bin/python -m unittest discover -s tests -v`
 
 领域：数据工程
 子方向：数仓与数据湖

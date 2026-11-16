@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Generic, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 T = TypeVar("T")
 
@@ -22,10 +22,23 @@ class ActionResult(BaseModel):
 
 
 class EntryPayload(BaseModel):
-    """登记或修改一条业务记录时提交的字段集合。"""
+    """登记或修改一条业务记录时提交的字段集合。
+
+    兼容两种提交口径：字段统一放在 values 里，或把 action 等字段直接放在顶层。
+    顶层字段会并入 values，路由层只需要读 values，不用逐个动作判断。
+    """
+
+    model_config = ConfigDict(extra="allow")
 
     values: dict[str, Any] = Field(default_factory=dict)
     remark: str | None = None
+
+    @model_validator(mode="after")
+    def _merge_top_level_fields(self) -> "EntryPayload":
+        extra = self.model_extra or {}
+        for key, value in extra.items():
+            self.values.setdefault(key, value)
+        return self
 
 
 
